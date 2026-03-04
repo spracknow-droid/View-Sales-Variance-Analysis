@@ -11,59 +11,62 @@ class SalesAnalyzer:
         query = f"SELECT * FROM {COLUMNS['view_name']}"
         df = pd.read_sql(query, conn)
         conn.close()
-
-        # [핵심 수정] DB에 없는 '판매금액'을 수량 * 단가로 계산해서 생성
-        # 만약 단가가 외화라면, 이것이 곧 외화 기준 '판매금액'이 됩니다.
-        df['판매금액'] = df[COLUMNS['qty']] * df[COLUMNS['unit_price']]
         
+        # 내부 계산용 '판매금액' 생성 (수량 * 단가)
+        # 이 값이 외화 기준인지 확인이 필요합니다.
+        df['판매금액'] = df[COLUMNS['qty']] * df[COLUMNS['unit_price']]
         return df
 
     def calculate_variance(self, df, target_month, selected_groups):
-        # 필터링
+        # 1. 필터링
         df_filtered = df[(df[COLUMNS['date']] == target_month) & 
                          (df[COLUMNS['cust_group']].isin(selected_groups))].copy()
         
         if df_filtered.empty:
             return pd.DataFrame()
 
-        # 계획/실적 분리
-        plan = df_filtered[df_filtered[COLUMNS['division']] == '계획'].copy()
-        actual = df_filtered[df_filtered[COLUMNS['division']] == '판매실적'].copy()
-
-        # 집계 (판매금액 포함)
+        # 2. 계획(Plan)과 실적(Actual) 분리 및 집계
         group_cols = [COLUMNS['category_mid']]
-        agg_dict = {
-            COLUMNS['qty']: 'sum',
-            '판매금액': 'sum',      # 위에서 생성한 컬럼 사용
-            COLUMNS['amt_krw']: 'sum'
-        }
         
-        p_agg = plan.groupby(group_cols).agg(agg_dict).reset_index()
-        a_agg = actual.groupby(group_cols).agg(agg_dict).reset_index()
+        # 데이터구분('판매실적', '계획')에 따른 그룹화
+        p_data = df_filtered[df_filtered[COLUMNS['division']] == '계획']
+        a_data = df_filtered[df_filtered[COLUMNS['division']] == '판매실적']
 
-        # 병합
+        p_agg = p_data.groupby(group_cols).agg({
+            COLUMNS['qty']: 'sum',
+            '판매금액': 'sum',
+            COLUMNS['amt_krw']: 'sum'
+        }).reset_index()
+        
+        a_agg = a_data.groupby(group_cols).agg({
+            COLUMNS['qty']: 'sum',
+            '판매금액': 'sum',
+            COLUMNS['amt_krw']: 'sum'
+        }).reset_index()
+
+        # 3. 데이터 병합 (Outer Join으로 한쪽만 데이터가 있는 경우 대비)
         res = pd.merge(p_agg, a_agg, on=group_cols, how='outer', suffixes=('_P', '_A')).fillna(0)
 
-        # 요인 분석 계산 (Price-Volume-FX)
-        # 1. 기초 값 산출 (단가 P, 환율 ER)
-        res['P_P'] = res['판매금액_P'] / res[COLUMNS['qty']+'_P']
-        res['ER_P'] = res[COLUMNS['amt_krw']+'_P'] / res['판매금액_P']
+        # 4. 분석용 비율 지표 계산 (0 나누기 방지)
+        # 계획 단가(P_P), 계획 환율(ER_P)
+        res['P_P'] = res.apply(lambda x: x['판매금액_P'] / x[COLUMNS['qty']+'_P'] if x[COLUMNS['qty']+'_P'] != 0 else 0, axis=1)
+        res['ER_P'] = res.apply(lambda x: x[COLUMNS['amt_krw']+'_P'] / x['판매금액_P'] if x['판매금액_P'] != 0 else 0, axis=1)
         
-        res['P_A'] = res['판매금액_A'] / res[COLUMNS['qty']+'_A']
-        res['ER_A'] = res[COLUMNS['amt_krw']+'_A'] / res['판매금액_A']
-        
-        res = res.fillna(0)
+        # 실제 단가(P_A), 실제 환율(ER_A)
+        res['P_A'] = res.apply(lambda x: x['판매금액_A'] / x[COLUMNS['qty']+'_A'] if x[COLUMNS['qty']+'_A'] != 0 else 0, axis=1)
+        res['ER_A'] = res.apply(lambda x: x[COLUMNS['amt_krw']+'_A'] / x['판매금액_A'] if x['판매금액_A'] != 0 else 0, axis=1)
 
-        # 2. Impact 계산
-        # 수량차이: (실적Q - 계획Q) * 계획P * 계획ER
+        # 5. [Impact 상세 분석] - 수학적 분리
+        # 수량차이 Impact: 수량의 변화량에 계획 시점의 단가와 환율을 적용
         res['수량차이_Impact'] = (res[COLUMNS['qty']+'_A'] - res[COLUMNS['qty']+'_P']) * res['P_P'] * res['ER_P']
         
-        # 단가차이: 실적Q * (실적P - 계획P) * 계획ER
+        # 단가차이 Impact: 실제 판매된 수량에 대해 발생한 단가 변동분에 계획 환율 적용
         res['단가차이_Impact'] = res[COLUMNS['qty']+'_A'] * (res['P_A'] - res['P_P']) * res['ER_P']
         
-        # 환율차이: 실적Q * 실적P * (실적ER - 계획ER)
+        # 환율차이 Impact: 실제 매출(실제 수량 * 실제 단가)에 대해 발생한 환율 변동분 적용
         res['환율차이_Impact'] = res[COLUMNS['qty']+'_A'] * res['P_A'] * (res['ER_A'] - res['ER_P'])
         
+        # 전체 차이 합계 확인용
         res['총매출차이'] = res[COLUMNS['amt_krw']+'_A'] - res[COLUMNS['amt_krw']+'_P']
 
         return res
