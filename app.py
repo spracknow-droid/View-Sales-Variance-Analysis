@@ -14,7 +14,7 @@ uploaded_file = st.sidebar.file_uploader("분석할 SQLite DB 업로드", type=[
 FIXED_HIERARCHY = [COLUMNS['category_mid'], COLUMNS['cust_group'], COLUMNS['currency']]
 
 if uploaded_file:
-    # 1. 임시 파일 생성 및 업로드 데이터 복사
+    # 1. 임시 파일 생성
     with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
         tmp.write(uploaded_file.getvalue())
         tmp_path = tmp.name
@@ -26,39 +26,37 @@ if uploaded_file:
 
         st.title("🔍 매출 변동 요인 분석 상세 View")
 
-        # 2. 분석 실행 (Python 메모리 상의 결과)
+        # 2. 분석 실행 (화면 표시용)
         result = analyzer.calculate_variance(df_raw, all_groups, FIXED_HIERARCHY)
 
         if not result.empty:
-            # 3. 상단 필터 및 테이블 표시 (항상 노출)
+            # 3. 상단 필터 및 테이블 표시
             filtered_result = ui.display_filters(result)
             styled_table = ui.format_analysis_table(filtered_result)
             st.dataframe(styled_table, use_container_width=True, height=650, hide_index=True)
 
             st.divider()
 
-            # 4. [통합 버튼] VIEW 생성 후 즉시 다운로드 버튼 활성화
-            # 버튼 클릭 시 DB 내부에 VIEW를 물리적으로 심습니다.
-            if st.button("🚀 분석 VIEW가 포함된 DB 생성 및 다운로드 준비", use_container_width=True):
-                v_name = analyzer.create_sql_view(FIXED_HIERARCHY)
-                
-                if v_name:
-                    st.success(f"✅ DB 내부에 가상 테이블('{v_name}')이 성공적으로 심어졌습니다!")
-                    
-                    with open(tmp_path, "rb") as f:
-                        st.download_button(
-                            label="📥 생성된 DB 파일 다운로드 받기",
-                            data=f,
-                            file_name=f"Sales_Analysis_Report.db",
-                            mime="application/x-sqlite3",
-                            use_container_width=True
-                        )
-                else:
-                    st.error("VIEW 생성 중 오류가 발생했습니다.")
+            # ---------------------------------------------------------
+            # 4. [진짜 통합 버튼] 딱 이거 하나만 존재합니다.
+            # ---------------------------------------------------------
+            # 미리 VIEW를 생성해둔 뒤 다운로드 버튼에 바로 데이터로 넘깁니다.
+            analyzer.create_sql_view(FIXED_HIERARCHY) 
+            
+            with open(tmp_path, "rb") as f:
+                st.download_button(
+                    label="🚀 분석 VIEW 포함하여 DB 파일 즉시 다운로드",
+                    data=f,
+                    file_name="Sales_Analysis_Report.db",
+                    mime="application/x-sqlite3",
+                    use_container_width=True
+                )
+            # ---------------------------------------------------------
+
         else:
-            st.warning("분석할 수 있는 데이터가 없습니다.")
+            st.warning("분석할 데이터가 없습니다.")
 
     except Exception as e:
         st.error(f"오류 발생: {e}")
 else:
-    st.info("왼쪽 사이드바에서 DB 파일을 업로드하면 분석이 시작됩니다.")
+    st.info("왼쪽에서 DB 파일을 업로드하세요.")
