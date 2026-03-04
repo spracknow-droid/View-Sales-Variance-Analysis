@@ -1,17 +1,19 @@
 import streamlit as st
 import tempfile
 import os
-import pandas as pd  # 초기화를 위해 필요
-from logic import SalesAnalyzer
-from mapping import COLUMNS
+import pandas as pd
+# 파일이 같은 경로에 있는지 확인하세요
+try:
+    from logic import SalesAnalyzer
+    from mapping import COLUMNS
+except ImportError:
+    st.error("❌ logic.py 또는 mapping.py 파일을 찾을 수 없습니다. 파일 위치를 확인해주세요.")
+    st.stop()
 
-st.set_page_config(page_title="매출 분석 시스템 - 분석 View", layout="wide")
+st.set_page_config(page_title="매출 분석 시스템", layout="wide")
 
-st.sidebar.title("📁 데이터 관리")
-uploaded_file = st.sidebar.file_uploader("분석 DB 업로드", type=['db'])
-
-# 1. 변수 초기화 (NameError 방지)
-result = pd.DataFrame()
+st.sidebar.title("📁 데이터 소스")
+uploaded_file = st.sidebar.file_uploader("DB 파일 업로드", type=['db'])
 
 if uploaded_file:
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
@@ -22,20 +24,20 @@ if uploaded_file:
         analyzer = SalesAnalyzer(tmp_path)
         df_raw = analyzer.get_raw_data()
 
-        # 사이드바 필터
+        # 필터링
         months = sorted(df_raw[COLUMNS['date']].unique(), reverse=True)
-        sel_month = st.sidebar.selectbox("📅 대상 월 선택", months)
+        sel_month = st.sidebar.selectbox("📅 분석 연월", months)
         
         groups = sorted(df_raw[COLUMNS['cust_group']].unique())
-        sel_groups = st.sidebar.multiselect("👥 고객그룹 필터", groups, default=groups)
+        sel_groups = st.sidebar.multiselect("👥 고객그룹", groups, default=groups)
 
-        # 2. 계산 실행 (이 블록 안에서 result가 생성됨)
+        # 계산 실행
         result = analyzer.calculate_variance(df_raw, sel_month, sel_groups)
 
-        # 3. 화면 표시 로직 (반드시 계산 실행과 같은 레벨 혹은 그 아래에 위치)
         if not result.empty:
-            st.title(f"🔍 {sel_month} 매출 변동 상세 View")
-
+            st.title(f"🔍 {sel_month} 매출 변동 요인 View")
+            
+            # View 전용 데이터 가공 (그룹핑 강조)
             view_df = result[[
                 COLUMNS['cust_group'], 
                 COLUMNS['category_mid'], 
@@ -43,31 +45,39 @@ if uploaded_file:
                 '수량차이_Impact', 
                 '단가차이_Impact', 
                 '환율차이_Impact'
-            ]]
+            ]].copy()
 
-            # 스타일링 함수 (Matplotlib 없이 작동)
-            def color_delta(val):
-                if val < -100: return 'color: red'
-                elif val > 100: return 'color: blue'
-                return 'color: black'
+            # 스타일링: 음수 빨강, 양수 파랑
+            def style_delta(val):
+                color = 'red' if val < -100 else 'blue' if val > 100 else 'black'
+                return f'color: {color}; font-weight: bold'
 
-            st.subheader("📊 계층별 매출 변동 내역")
+            st.subheader("📊 항목별 상세 분석 (그룹핑 View)")
             
+            # Pandas Styler를 이용한 표 구성
             styled_view = view_df.style.format({
                 '총매출차이': '{:,.0f}',
                 '수량차이_Impact': '{:,.0f}',
                 '단가차이_Impact': '{:,.0f}',
                 '환율차이_Impact': '{:,.0f}'
-            }).applymap(color_delta, subset=['총매출차이', '수량차이_Impact', '단가차이_Impact', '환율차이_Impact'])
+            }).applymap(style_delta, subset=['총매출차이', '수량차이_Impact', '단가차이_Impact', '환율차이_Impact'])
 
-            st.dataframe(styled_view, use_container_width=True, height=700, hide_index=True)
+            # 인덱스를 숨기고 화면에 꽉 차게 표시
+            st.dataframe(styled_view, use_container_width=True, height=600, hide_index=True)
+            
+            # 하단 요약 (그룹별 합계 View 추가 가능)
+            st.divider()
+            summary = view_df.groupby(COLUMNS['cust_group'])['총매출차이'].sum().reset_index()
+            st.write("📌 고객그룹별 총 차이 요약")
+            st.table(summary.style.format({'총매출차이': '{:,.0f}'}))
+
         else:
-            st.warning("분석할 수 있는 데이터가 부족합니다.")
+            st.warning("분석 가능한 데이터(계획/실적 쌍)가 없습니다.")
 
     except Exception as e:
-        st.error(f"실행 중 오류 발생: {e}")
+        st.error(f"오류 발생: {e}")
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 else:
-    st.info("사이드바에서 DB 파일을 업로드해주세요.")
+    st.info("왼쪽 사이드바에서 DB 파일을 업로드하면 분석 View가 생성됩니다.")
