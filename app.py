@@ -2,20 +2,33 @@ import streamlit as st
 import tempfile
 import os
 import pandas as pd
-# 파일이 같은 경로에 있는지 확인하세요
-try:
-    from logic import SalesAnalyzer
-    from mapping import COLUMNS
-except ImportError:
-    st.error("❌ logic.py 또는 mapping.py 파일을 찾을 수 없습니다. 파일 위치를 확인해주세요.")
-    st.stop()
+from logic import SalesAnalyzer
+from mapping import COLUMNS
 
 st.set_page_config(page_title="매출 분석 시스템", layout="wide")
 
-st.sidebar.title("📁 데이터 소스")
+st.sidebar.title("📁 데이터 및 설정")
 uploaded_file = st.sidebar.file_uploader("DB 파일 업로드", type=['db'])
 
-if uploaded_file:
+# --- 분석 계층 설정 UI ---
+# 사용자가 원하는 순서대로 분석 축을 선택하고 드래그하여 순서를 결정할 수 있습니다.
+hierarchy_options = {
+    "고객그룹": COLUMNS['cust_group'],
+    "중분류": COLUMNS['category_mid'],
+    "거래통화": COLUMNS['currency']
+}
+
+st.sidebar.subheader("📊 분석 계층 순서")
+selected_labels = st.sidebar.multiselect(
+    "순서대로 선택하세요 (예: 고객->중분류->통화)",
+    options=list(hierarchy_options.keys()),
+    default=["고객그룹", "중분류", "거래통화"]
+)
+
+# 라벨을 실제 컬럼명으로 변환
+hierarchy = [hierarchy_options[label] for label in selected_labels]
+
+if uploaded_file and len(hierarchy) > 0:
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
         tmp.write(uploaded_file.getvalue())
         tmp_path = tmp.name
@@ -24,60 +37,42 @@ if uploaded_file:
         analyzer = SalesAnalyzer(tmp_path)
         df_raw = analyzer.get_raw_data()
 
-        # 필터링
+        # 필터링 UI
         months = sorted(df_raw[COLUMNS['date']].unique(), reverse=True)
         sel_month = st.sidebar.selectbox("📅 분석 연월", months)
         
         groups = sorted(df_raw[COLUMNS['cust_group']].unique())
         sel_groups = st.sidebar.multiselect("👥 고객그룹", groups, default=groups)
 
-        # 계산 실행
-        result = analyzer.calculate_variance(df_raw, sel_month, sel_groups)
+        # [수정] hierarchy 인자를 추가하여 호출
+        result = analyzer.calculate_variance(df_raw, sel_month, sel_groups, hierarchy)
 
         if not result.empty:
             st.title(f"🔍 {sel_month} 매출 변동 요인 View")
-            
-            # View 전용 데이터 가공 (그룹핑 강조)
-            view_df = result[[
-                COLUMNS['cust_group'], 
-                COLUMNS['category_mid'], 
-                '총매출차이', 
-                '수량차이_Impact', 
-                '단가차이_Impact', 
-                '환율차이_Impact'
-            ]].copy()
+            st.caption(f"분석 계층: {' > '.join(selected_labels)}")
 
-            # 스타일링: 음수 빨강, 양수 파랑
+            # 숫자 포맷 및 스타일 적용
             def style_delta(val):
                 color = 'red' if val < -100 else 'blue' if val > 100 else 'black'
                 return f'color: {color}; font-weight: bold'
 
-            st.subheader("📊 항목별 상세 분석 (그룹핑 View)")
-            
-            # Pandas Styler를 이용한 표 구성
-            styled_view = view_df.style.format({
+            styled_view = result.style.format({
                 '총매출차이': '{:,.0f}',
                 '수량차이_Impact': '{:,.0f}',
                 '단가차이_Impact': '{:,.0f}',
                 '환율차이_Impact': '{:,.0f}'
             }).applymap(style_delta, subset=['총매출차이', '수량차이_Impact', '단가차이_Impact', '환율차이_Impact'])
 
-            # 인덱스를 숨기고 화면에 꽉 차게 표시
             st.dataframe(styled_view, use_container_width=True, height=600, hide_index=True)
-            
-            # 하단 요약 (그룹별 합계 View 추가 가능)
-            st.divider()
-            summary = view_df.groupby(COLUMNS['cust_group'])['총매출차이'].sum().reset_index()
-            st.write("📌 고객그룹별 총 차이 요약")
-            st.table(summary.style.format({'총매출차이': '{:,.0f}'}))
-
         else:
-            st.warning("분석 가능한 데이터(계획/실적 쌍)가 없습니다.")
+            st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
 
     except Exception as e:
-        st.error(f"오류 발생: {e}")
+        st.error(f"실행 중 오류 발생: {e}")
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+elif not uploaded_file:
+    st.info("왼쪽 사이드바에서 DB 파일을 업로드해주세요.")
 else:
-    st.info("왼쪽 사이드바에서 DB 파일을 업로드하면 분석 View가 생성됩니다.")
+    st.warning("최소 하나 이상의 분석 계층을 선택해야 합니다.")
