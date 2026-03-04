@@ -11,61 +11,59 @@ class SalesAnalyzer:
         query = f"SELECT * FROM {COLUMNS['view_name']}"
         df = pd.read_sql(query, conn)
         conn.close()
+
+        # [핵심 수정] DB에 없는 '판매금액'을 수량 * 단가로 계산해서 생성
+        # 만약 단가가 외화라면, 이것이 곧 외화 기준 '판매금액'이 됩니다.
+        df['판매금액'] = df[COLUMNS['qty']] * df[COLUMNS['unit_price']]
+        
         return df
 
     def calculate_variance(self, df, target_month, selected_groups):
-        # 1. 필터링 (해당 월 & 선택된 고객그룹)
+        # 필터링
         df_filtered = df[(df[COLUMNS['date']] == target_month) & 
                          (df[COLUMNS['cust_group']].isin(selected_groups))].copy()
         
         if df_filtered.empty:
             return pd.DataFrame()
 
-        # 2. 계획(Plan)과 실적(Actual) 분리
+        # 계획/실적 분리
         plan = df_filtered[df_filtered[COLUMNS['division']] == '계획'].copy()
         actual = df_filtered[df_filtered[COLUMNS['division']] == '판매실적'].copy()
 
-        # 3. 집계 (중분류별로 합산)
+        # 집계 (판매금액 포함)
         group_cols = [COLUMNS['category_mid']]
-        p_agg = plan.groupby(group_cols).agg({
+        agg_dict = {
             COLUMNS['qty']: 'sum',
-            COLUMNS['amt_cur']: 'sum',
+            '판매금액': 'sum',      # 위에서 생성한 컬럼 사용
             COLUMNS['amt_krw']: 'sum'
-        }).reset_index()
+        }
         
-        a_agg = actual.groupby(group_cols).agg({
-            COLUMNS['qty']: 'sum',
-            COLUMNS['amt_cur']: 'sum',
-            COLUMNS['amt_krw']: 'sum'
-        }).reset_index()
+        p_agg = plan.groupby(group_cols).agg(agg_dict).reset_index()
+        a_agg = actual.groupby(group_cols).agg(agg_dict).reset_index()
 
-        # 4. 데이터 병합 (Outer Join)
+        # 병합
         res = pd.merge(p_agg, a_agg, on=group_cols, how='outer', suffixes=('_P', '_A')).fillna(0)
 
-        # 5. 요인 분석 계산 (중요 로직)
-        # 단가(P) = 판매금액 / 수량, 환율(ER) = 장부금액 / 판매금액
+        # 요인 분석 계산 (Price-Volume-FX)
+        # 1. 기초 값 산출 (단가 P, 환율 ER)
+        res['P_P'] = res['판매금액_P'] / res[COLUMNS['qty']+'_P']
+        res['ER_P'] = res[COLUMNS['amt_krw']+'_P'] / res['판매금액_P']
         
-        # 계획 수치 계산
-        res['P_P'] = res[COLUMNS['amt_cur']+'_P'] / res[COLUMNS['qty']+'_P']
-        res['ER_P'] = res[COLUMNS['amt_krw']+'_P'] / res[COLUMNS['amt_cur']+'_P']
+        res['P_A'] = res['판매금액_A'] / res[COLUMNS['qty']+'_A']
+        res['ER_A'] = res[COLUMNS['amt_krw']+'_A'] / res['판매금액_A']
         
-        # 실제 수치 계산
-        res['P_A'] = res[COLUMNS['amt_cur']+'_A'] / res[COLUMNS['qty']+'_A']
-        res['ER_A'] = res[COLUMNS['amt_krw']+'_A'] / res[COLUMNS['amt_cur']+'_A']
-        
-        res = res.fillna(0) # 0으로 나누기 방지
+        res = res.fillna(0)
 
-        # [Impact 계산 공식]
-        # 1. 수량차이: (실적Qty - 계획Qty) * 계획단가 * 계획환율
+        # 2. Impact 계산
+        # 수량차이: (실적Q - 계획Q) * 계획P * 계획ER
         res['수량차이_Impact'] = (res[COLUMNS['qty']+'_A'] - res[COLUMNS['qty']+'_P']) * res['P_P'] * res['ER_P']
         
-        # 2. 단가차이: 실적Qty * (실적단가 - 계획단가) * 계획환율
+        # 단가차이: 실적Q * (실적P - 계획P) * 계획ER
         res['단가차이_Impact'] = res[COLUMNS['qty']+'_A'] * (res['P_A'] - res['P_P']) * res['ER_P']
         
-        # 3. 환율차이: 실적Qty * 실적단가 * (실적환율 - 계획환율)
+        # 환율차이: 실적Q * 실적P * (실적ER - 계획ER)
         res['환율차이_Impact'] = res[COLUMNS['qty']+'_A'] * res['P_A'] * (res['ER_A'] - res['ER_P'])
         
-        # 4. 총 매출 차이
         res['총매출차이'] = res[COLUMNS['amt_krw']+'_A'] - res[COLUMNS['amt_krw']+'_P']
 
         return res
