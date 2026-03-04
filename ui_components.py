@@ -7,30 +7,52 @@ def get_display_labels():
     amt_nm = COLUMNS['amt_krw']
     date_nm = COLUMNS['date']
     return {
-        date_nm: "매출연월", # 연월 컬럼 추가
+        date_nm: "매출연월",
         f"{qty_nm}_P": "계획수량", "단가_P": "계획단가", f"{amt_nm}_P": "계획금액",
         f"{qty_nm}_A": "실적수량", "단가_A": "실적단가", f"{amt_nm}_A": "실적금액",
         "총매출차이": "총차이(KRW)", "수량차이_Impact": "수량효과", "단가차이_Impact": "단가효과", "환율차이_Impact": "환율효과"
     }
 
-def display_summary_metrics(df):
-    if df.empty: return
-    target_cols = ['총매출차이', '수량차이_Impact', '단가차이_Impact', '환율차이_Impact']
-    temp_df = df[target_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
+def display_filters(df):
+    """
+    화면 상단에 멀티 셀렉트 필터를 배치하여 사용자가 실시간으로 View를 제어하게 합니다.
+    """
+    if df.empty: return df
+
+    # 필터 레이아웃 (3컬럼: 연월, 고객그룹, 중분류 등)
+    cols = st.columns(3)
     
-    t, q, p, e = temp_df.sum()
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("📊 누적 총 차이", f"{t:,.0f}")
-    m2.metric("📦 수량 효과", f"{q:,.0f}")
-    m3.metric("💰 단가 효과", f"{p:,.0f}")
-    m4.metric("💱 환율 효과", f"{e:,.0f}")
+    # 1. 매출연월 필터
+    with cols[0]:
+        unique_months = sorted(df[COLUMNS['date']].unique(), reverse=True)
+        sel_months = st.multiselect("📅 매출연월 필터", unique_months, default=unique_months)
+    
+    # 2. 고객그룹 필터
+    with cols[1]:
+        unique_groups = sorted(df[COLUMNS['cust_group']].unique())
+        sel_groups = st.multiselect("👥 고객그룹 필터", unique_groups, default=unique_groups)
+
+    # 3. 거래통화 필터
+    with cols[2]:
+        unique_curr = sorted(df[COLUMNS['currency']].unique())
+        sel_curr = st.multiselect("💱 거래통화 필터", unique_curr, default=unique_curr)
+
+    # 데이터 필터링 적용
+    filtered_df = df[
+        (df[COLUMNS['date']].isin(sel_months)) &
+        (df[COLUMNS['cust_group']].isin(sel_groups)) &
+        (df[COLUMNS['currency']].isin(sel_curr))
+    ]
+    
     st.divider()
+    return filtered_df
 
 def format_analysis_table(df):
+    """스타일 적용 및 수치형 변환"""
     labels = get_display_labels()
     view_df = df.rename(columns=labels)
 
-    # 수치형 변환 (매출연월은 제외)
+    # 수치형 강제 변환 (Unknown format code 'f' 방지)
     numeric_cols = [v for k, v in labels.items() if k != COLUMNS['date']]
     for col in numeric_cols:
         if col in view_df.columns:
