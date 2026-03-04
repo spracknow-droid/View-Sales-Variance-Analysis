@@ -1,4 +1,4 @@
-import pandas as pd  # <-- 이 부분이 누락되었을 가능성이 큽니다.
+import pandas as pd
 import sqlite3
 from mapping import COLUMNS
 
@@ -17,22 +17,26 @@ class SalesAnalyzer:
         df['판매금액'] = df[COLUMNS['qty']] * df[COLUMNS['unit_price']]
         return df
 
-    def calculate_variance(self, df, target_month, selected_groups, hierarchy):
-        df_filtered = df[(df[COLUMNS['date']] == target_month) & 
-                         (df[COLUMNS['cust_group']].isin(selected_groups))].copy()
+    def calculate_variance(self, df, selected_groups, hierarchy):
+        # 1. 필터링 (연월 필터 제거, 고객그룹만 유지)
+        df_filtered = df[df[COLUMNS['cust_group']].isin(selected_groups)].copy()
         
         if df_filtered.empty: return pd.DataFrame()
 
-        group_cols = hierarchy
+        # 2. 그룹핑 컬럼에 '매출연월' 강제 포함
+        date_col = COLUMNS['date']
+        group_cols = [date_col] + hierarchy # 연월이 가장 앞에 오도록 설정
+        
         qty_col, krw_col = COLUMNS['qty'], COLUMNS['amt_krw']
         agg_dict = {qty_col: 'sum', '판매금액': 'sum', krw_col: 'sum'}
         
         p_agg = df_filtered[df_filtered[COLUMNS['division']] == COLUMNS['plan_val']].groupby(group_cols).agg(agg_dict).reset_index()
         a_agg = df_filtered[df_filtered[COLUMNS['division']] == COLUMNS['actual_val']].groupby(group_cols).agg(agg_dict).reset_index()
 
+        # 3. 데이터 병합
         res = pd.merge(p_agg, a_agg, on=group_cols, how='outer', suffixes=('_P', '_A')).fillna(0)
 
-        # 지표 계산
+        # 4. 요인 계산
         res['단가_P'] = res.apply(lambda x: x['판매금액_P'] / x[f'{qty_col}_P'] if x[f'{qty_col}_P'] != 0 else 0, axis=1)
         res['환율_P'] = res.apply(lambda x: x[f'{krw_col}_P'] / x['판매금액_P'] if x['판매금액_P'] != 0 else 0, axis=1)
         res['단가_A'] = res.apply(lambda x: x['판매금액_A'] / x[f'{qty_col}_A'] if x[f'{qty_col}_A'] != 0 else 0, axis=1)
@@ -51,17 +55,19 @@ class SalesAnalyzer:
             f'{qty_col}_A', '단가_A', f'{krw_col}_A',
             '총매출차이', '수량차이_Impact', '단가차이_Impact', '환율차이_Impact'
         ]
-        return res[final_cols].sort_values(group_cols)
+        # 연월 순으로 정렬
+        return res[final_cols].sort_values(group_cols, ascending=[False] + [True]*len(hierarchy))
 
-    def create_sql_view(self, target_month, hierarchy):
+    def create_sql_view(self, hierarchy):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        view_name = f"View_Analysis_{target_month.replace('-', '')}"
+        view_name = "View_Sales_Analysis_All_Months"
         cursor.execute(f"DROP VIEW IF EXISTS {view_name}")
 
-        cols_str = ", ".join([f'"{c}"' for c in hierarchy]) # SQL 예약어 방지 따옴표 추가
+        # SQL 그룹핑에도 연월 추가
+        all_cols = [COLUMNS['date']] + hierarchy
+        cols_str = ", ".join([f'"{c}"' for c in all_cols])
         
-        # SQL VIEW 생성 쿼리 (가상 테이블)
         create_query = f"""
         CREATE VIEW {view_name} AS
         SELECT {cols_str}, 
@@ -70,14 +76,13 @@ class SalesAnalyzer:
                SUM(CASE WHEN {COLUMNS['division']}='{COLUMNS['actual_val']}' THEN {COLUMNS['amt_krw']} ELSE 0 END) - 
                SUM(CASE WHEN {COLUMNS['division']}='{COLUMNS['plan_val']}' THEN {COLUMNS['amt_krw']} ELSE 0 END) as Total_Diff
         FROM {COLUMNS['view_name']}
-        WHERE {COLUMNS['date']} = '{target_month}'
         GROUP BY {cols_str}
         """
         try:
             cursor.execute(create_query)
             conn.commit()
             return view_name
-        except Exception as e:
+        except:
             return None
         finally:
             conn.close()
