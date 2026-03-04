@@ -11,7 +11,7 @@ st.set_page_config(page_title="매출 분석 시스템", layout="wide")
 st.sidebar.title("📁 설정")
 uploaded_file = st.sidebar.file_uploader("DB 파일 업로드", type=['db'])
 
-hierarchy_options = {"고객그룹": COLUMNS['cust_group'], "중분류": COLUMNS['category_mid'], "거래통화": COLUMNS['currency']}
+hierarchy_options = {"중분류": COLUMNS['category_mid'], "고객그룹": COLUMNS['cust_group'], "거래통화": COLUMNS['currency']}
 selected_labels = st.sidebar.multiselect("분석 계층 순서", options=list(hierarchy_options.keys()), default=["고객그룹", "중분류", "거래통화"])
 hierarchy = [hierarchy_options[label] for label in selected_labels]
 
