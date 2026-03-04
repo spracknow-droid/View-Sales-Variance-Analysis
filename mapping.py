@@ -7,6 +7,6 @@ COLUMNS = {
     'division': '데이터구분', # '판매실적' vs '계획' 구분자
     'qty': '수량',
     'amt_usd': '외화금액',
-    'amt_krw': '원화금액',
+    'amt_krw': '장부금액',
     'currency': '통화'
 }
