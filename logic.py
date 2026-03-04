@@ -4,34 +4,26 @@ from mapping import COLUMNS
 
 class SalesAnalyzer:
     def __init__(self, db_path):
-        """생성자: DB 경로를 인자로 받아 저장합니다."""
         self.db_path = db_path
 
     def get_raw_data(self):
-        """DB에서 데이터를 로드하고 전처리합니다."""
         conn = sqlite3.connect(self.db_path)
         query = f"SELECT * FROM {COLUMNS['view_name']}"
         df = pd.read_sql(query, conn)
         conn.close()
         
-        # 데이터 클렌징 (공백 제거 등)
         df[COLUMNS['division']] = df[COLUMNS['division']].astype(str).str.strip()
         df[COLUMNS['currency']] = df[COLUMNS['currency']].astype(str).str.strip()
-        
-        # 계산용 임시 컬럼
         df['판매금액'] = df[COLUMNS['qty']] * df[COLUMNS['unit_price']]
         return df
 
     def calculate_variance(self, df, selected_groups, hierarchy):
-        """Python 메모리 상에서 실시간 분석 결과를 계산합니다. (화면 출력용)"""
+        """화면 출력용 실시간 계산"""
         df_filtered = df[df[COLUMNS['cust_group']].isin(selected_groups)].copy()
-        if df_filtered.empty:
-            return pd.DataFrame()
+        if df_filtered.empty: return pd.DataFrame()
 
-        date_col = COLUMNS['date']
+        date_col, qty_col, krw_col = COLUMNS['date'], COLUMNS['qty'], COLUMNS['amt_krw']
         group_cols = [date_col] + hierarchy
-        qty_col, krw_col = COLUMNS['qty'], COLUMNS['amt_krw']
-        
         agg_dict = {qty_col: 'sum', '판매금액': 'sum', krw_col: 'sum'}
         
         p_agg = df_filtered[df_filtered[COLUMNS['division']] == COLUMNS['plan_val']].groupby(group_cols).agg(agg_dict).reset_index()
@@ -39,7 +31,6 @@ class SalesAnalyzer:
 
         res = pd.merge(p_agg, a_agg, on=group_cols, how='outer', suffixes=('_P', '_A')).fillna(0)
 
-        # 요인 분석 수식 적용
         res['단가_P'] = res.apply(lambda x: x['판매금액_P'] / x[f'{qty_col}_P'] if x[f'{qty_col}_P'] != 0 else 0, axis=1)
         res['환율_P'] = res.apply(lambda x: x[f'{krw_col}_P'] / x['판매금액_P'] if x['판매금액_P'] != 0 else 0, axis=1)
         res['단가_A'] = res.apply(lambda x: x['판매금액_A'] / x[f'{qty_col}_A'] if x[f'{qty_col}_A'] != 0 else 0, axis=1)
@@ -48,31 +39,29 @@ class SalesAnalyzer:
         res['P_P_final'] = res.apply(lambda x: x['단가_P'] if x['단가_P'] != 0 else x['단가_A'], axis=1)
         res['ER_P_final'] = res.apply(lambda x: x['환율_P'] if x['환율_P'] != 0 else x['환율_A'], axis=1)
 
-        res['수량차이_Impact'] = (res[f'{qty_col}_A'] - res[f'{qty_col}_P']) * res['P_P_final'] * res['ER_P_final']
-        res['단가차이_Impact'] = res[f'{qty_col}_A'] * (res['단가_A'] - res['P_P_final']) * res['ER_P_final']
-        res['환율차이_Impact'] = res[f'{qty_col}_A'] * res['단가_A'] * (res['환율_A'] - res['ER_P_final'])
+        res['수량효과'] = (res[f'{qty_col}_A'] - res[f'{qty_col}_P']) * res['P_P_final'] * res['ER_P_final']
+        res['단가효과'] = res[f'{qty_col}_A'] * (res['단가_A'] - res['P_P_final']) * res['ER_P_final']
+        res['환율효과'] = res[f'{qty_col}_A'] * res['단가_A'] * (res['환율_A'] - res['ER_P_final'])
         res['총매출차이'] = res[f'{krw_col}_A'] - res[f'{krw_col}_P']
 
         final_cols = group_cols + [
             f'{qty_col}_P', '단가_P', f'{krw_col}_P',
             f'{qty_col}_A', '단가_A', f'{krw_col}_A',
-            '총매출차이', '수량차이_Impact', '단가차이_Impact', '환율차이_Impact'
+            '총매출차이', '수량효과', '단가효과', '환율효과'
         ]
         return res[final_cols].sort_values(group_cols, ascending=[False] + [True]*len(hierarchy))
 
     def create_sql_view(self, hierarchy):
-        """DB 내부에 '진짜' 전문적인 분석 VIEW를 생성합니다."""
+        """DB 내부 VIEW 생성 (소수점 정리 및 0 데이터 제거)"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        view_name = "View_Sales_Analysis_Detailed"
+        view_name = "View_Sales_Analysis"  # 이름 고정
         cursor.execute(f"DROP VIEW IF EXISTS {view_name}")
 
-        # 계층 컬럼 (Null 방지 처리)
         date_c = COLUMNS['date']
         cols_select = ", ".join([f'IFNULL("{c}", "미분류") AS "{c}"' for c in [date_c] + hierarchy])
         cols_group = ", ".join([f'"{c}"' for c in [date_c] + hierarchy])
         
-        # 필드 매핑
         qty, u_price, amt_krw = COLUMNS['qty'], COLUMNS['unit_price'], COLUMNS['amt_krw']
         div, plan, actual = COLUMNS['division'], COLUMNS['plan_val'], COLUMNS['actual_val']
 
@@ -105,24 +94,18 @@ class SalesAnalyzer:
         )
         SELECT 
             {cols_group},
-            ROUND(Q_P, 0) AS 계획수량, 
-            ROUND(P_P, 4) AS 계획단가, 
-            ROUND(Amt_KRW_P, 0) AS 계획금액_KRW,
-            ROUND(Q_A, 0) AS 실적수량, 
-            ROUND(P_A, 4) AS 실적단가, 
-            ROUND(Amt_KRW_A, 0) AS 실적금액_KRW,
+            ROUND(Q_P, 0) AS 계획수량, ROUND(P_P, 4) AS 계획단가, ROUND(Amt_KRW_P, 0) AS 계획금액_KRW,
+            ROUND(Q_A, 0) AS 실적수량, ROUND(P_A, 4) AS 실적단가, ROUND(Amt_KRW_A, 0) AS 실적금액_KRW,
             ROUND(Amt_KRW_A - Amt_KRW_P, 0) AS 총차이_KRW,
             ROUND((Q_A - Q_P) * P_P_final * ER_P_final, 0) AS 수량효과,
             ROUND(Q_A * (P_A - P_P_final) * ER_P_final, 0) AS 단가효과,
             ROUND(Q_A * P_A * (ER_A - ER_P_final), 0) AS 환율효과
         FROM Final
-        WHERE (Q_P != 0 OR Q_A != 0); -- 의미 없는 데이터 자동 필터링
+        WHERE (Q_P != 0 OR Q_A != 0);
         """
         try:
             cursor.execute(create_query)
             conn.commit()
             return view_name
-        except:
-            return None
-        finally:
-            conn.close()
+        except: return None
+        finally: conn.close()
