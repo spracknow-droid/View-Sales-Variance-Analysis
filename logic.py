@@ -14,7 +14,7 @@ class SalesAnalyzer:
         df = pd.read_sql(query, conn)
         conn.close()
         
-        # 데이터 클렌징 (공백 제거 등)
+        # 데이터 클렌징
         df[COLUMNS['division']] = df[COLUMNS['division']].astype(str).str.strip()
         df[COLUMNS['currency']] = df[COLUMNS['currency']].astype(str).str.strip()
         
@@ -53,25 +53,24 @@ class SalesAnalyzer:
         res['환율효과'] = res[f'{qty_col}_A'] * res['단가_A'] * (res['환율_A'] - res['ER_P_final'])
         res['총매출차이'] = res[f'{krw_col}_A'] - res[f'{krw_col}_P']
 
+        # 화면 출력용 컬럼 구성 (환율 추가)
         final_cols = group_cols + [
-            f'{qty_col}_P', '단가_P', f'{krw_col}_P',
-            f'{qty_col}_A', '단가_A', f'{krw_col}_A',
+            f'{qty_col}_P', '단가_P', '환율_P', f'{krw_col}_P',
+            f'{qty_col}_A', '단가_A', '환율_A', f'{krw_col}_A',
             '총매출차이', '수량효과', '단가효과', '환율효과'
         ]
         return res[final_cols].sort_values(group_cols, ascending=[False] + [True]*len(hierarchy))
 
     def create_sql_view(self, hierarchy):
-        """DB 내부에 분석 VIEW 생성 (단가는 원본 유지, 금액은 반올림)"""
+        """DB 내부에 분석 VIEW 생성 (환율 지표 포함)"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         view_name = "View_Sales_Analysis" 
         cursor.execute(f"DROP VIEW IF EXISTS {view_name}")
 
-        # 계층 컬럼 설정
         date_c = COLUMNS['date']
         cols_group = ", ".join([f'"{c}"' for c in [date_c] + hierarchy])
         
-        # 필드 매핑
         qty, u_price, amt_krw = COLUMNS['qty'], COLUMNS['unit_price'], COLUMNS['amt_krw']
         div, plan, actual = COLUMNS['division'], COLUMNS['plan_val'], COLUMNS['actual_val']
 
@@ -106,9 +105,11 @@ class SalesAnalyzer:
             {cols_group},
             ROUND(Q_P, 0) AS 계획수량, 
             P_P AS 계획단가, 
+            ER_P AS 계획환율, -- 신규 추가
             ROUND(Amt_KRW_P, 0) AS 계획금액_KRW,
             ROUND(Q_A, 0) AS 실적수량, 
             P_A AS 실적단가, 
+            ER_A AS 실적환율, -- 신규 추가
             ROUND(Amt_KRW_A, 0) AS 실적금액_KRW,
             ROUND(Amt_KRW_A - Amt_KRW_P, 0) AS 총차이_KRW,
             ROUND((Q_A - Q_P) * P_P_final * ER_P_final, 0) AS 수량효과,
