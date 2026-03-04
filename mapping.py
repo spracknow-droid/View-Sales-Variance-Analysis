@@ -1,17 +1,12 @@
-# DB 내부 실제 컬럼명 매핑
+# 실제 DB View의 컬럼명과 100% 매칭
 COLUMNS = {
     'view_name': 'View_Integrated_Sales',
-    'date': '매출일',
-    'cust_group': '고객그룹',
-    'category_mid': '중분류',
-    'division': '데이터구분', # '판매실적' or '계획'
+    'date': '매출일',        # 날짜
+    'cust_group': '고객그룹', # 필터링 축 1
+    'category_mid': '중분류', # 필터링 축 2
+    'division': '데이터구분', # '판매실적' vs '계획' 구분자
     'qty': '수량',
     'amt_usd': '외화금액',
     'amt_krw': '원화금액',
     'currency': '통화'
 }
-
-def get_table_names(conn):
-    """DB 내 테이블/뷰 목록 확인용"""
-    import pandas as pd
-    return pd.read_sql("SELECT name FROM sqlite_master WHERE type IN ('table','view')", conn)['name'].tolist()
