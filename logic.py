@@ -4,65 +4,58 @@ from mapping import COLUMNS
 
 class SalesAnalyzer:
     def __init__(self, db_path):
-        self.conn = sqlite3.connect(db_path)
-        self.view_name = COLUMNS['view_name']
+        self.db_path = db_path
 
     def get_raw_data(self):
-        # View 이름에 공백이나 특수문자가 있을 수 있으므로 따옴표 처리
-        query = f'SELECT * FROM "{self.view_name}"'
-        return pd.read_sql(query, self.conn)
+        conn = sqlite3.connect(self.db_path)
+        # 뷰 이름에 공백이 있을 수 있으므로 대괄호 사용
+        query = f'SELECT * FROM [{COLUMNS["view_name"]}]'
+        df = pd.read_sql(query, conn)
+        conn.close()
+        return df
 
-    def calculate_variance_logic(self, month, customers):
-        df = self.get_raw_data()
-        
-        # 1. 필터링
+    def calculate_variance(self, df, month, customers):
+        # 1. 필터링 (선택한 달과 고객그룹)
         mask = (df[COLUMNS['date']].astype(str).str.startswith(month)) & \
                (df[COLUMNS['cust_group']].isin(customers))
-        df = df[mask]
+        f_df = df[mask].copy()
         
-        if df.empty: return pd.DataFrame()
+        if f_df.empty: return pd.DataFrame()
 
-        # 2. 피벗 (실적과 계획을 가로로 결합)
-        pivot = df.pivot_table(
+        # 2. 피벗팅: 데이터구분을 열로 올려서 '계획'과 '실적'을 한 줄에 배치
+        pivot = f_df.pivot_table(
             index=[COLUMNS['cust_group'], COLUMNS['category_mid'], COLUMNS['currency']],
             columns=COLUMNS['division'],
             values=[COLUMNS['qty'], COLUMNS['amt_usd'], COLUMNS['amt_krw']],
             aggfunc='sum'
         ).fillna(0)
 
-        # 컬럼 레벨 평면화
+        # 컬럼명 단순화 (예: 수량_계획, 수량_판매실적)
         pivot.columns = [f"{c[0]}_{c[1]}" for c in pivot.columns]
         pivot = pivot.reset_index()
 
-        # 실적/계획 컬럼 존재 여부 체크 및 변수 할당
+        # 3. 분석 변수 설정 (에러 방지를 위해 컬럼 존재 확인)
         try:
-            # 수량/단가/환율 분석을 위한 기본 필드 계산
-            # 수식: 
-            # 1. 수량차이 = (실적Qty - 계획Qty) * 계획단가 * 계획환율
-            # 2. 단가차이 = 실적Qty * (실적Price - 계획Price) * 계획환율
-            # 3. 환율차이 = 실적Qty * 실적Price * (실적ExRate - 계획ExRate)
-            
-            p_qty = f"{COLUMNS['qty']}_계획"
-            a_qty = f"{COLUMNS['qty']}_판매실적"
-            p_usd = f"{COLUMNS['amt_usd']}_계획"
-            a_usd = f"{COLUMNS['amt_usd']}_판매실적"
-            p_krw = f"{COLUMNS['amt_krw']}_계획"
-            a_krw = f"{COLUMNS['amt_krw']}_판매실적"
+            p_qty, a_qty = f"{COLUMNS['qty']}_계획", f"{COLUMNS['qty']}_판매실적"
+            p_usd, a_usd = f"{COLUMNS['amt_usd']}_계획", f"{COLUMNS['amt_usd']}_판매실적"
+            p_krw, a_krw = f"{COLUMNS['amt_krw']}_계획", f"{COLUMNS['amt_krw']}_판매실적"
 
-            # 0 나누기 방지를 위한 계산
+            # 단가 및 환율 역산 (0 나누기 방지)
             pivot['P_Price'] = pivot[p_usd] / pivot[p_qty].replace(0, 1)
             pivot['P_ExRate'] = pivot[p_krw] / pivot[p_usd].replace(0, 1)
             pivot['A_Price'] = pivot[a_usd] / pivot[a_qty].replace(0, 1)
             pivot['A_ExRate'] = pivot[a_krw] / pivot[a_usd].replace(0, 1)
 
-            # 핵심 차이 분석 로직
+            # [핵심 로직] Price-Volume-FX 분리
+            # 1. 수량차이: (실적수량 - 계획수량) * 계획단가 * 계획환율
             pivot['수량차이_Impact'] = (pivot[a_qty] - pivot[p_qty]) * pivot['P_Price'] * pivot['P_ExRate']
+            # 2. 단가차이: 실적수량 * (실적단가 - 계획단가) * 계획환율
             pivot['단가차이_Impact'] = pivot[a_qty] * (pivot['A_Price'] - pivot['P_Price']) * pivot['P_ExRate']
+            # 3. 환율차이: 실적수량 * 실적단가 * (실적환율 - 계획환율)
             pivot['환율차이_Impact'] = pivot[a_qty] * pivot['A_Price'] * (pivot['A_ExRate'] - pivot['P_ExRate'])
             
             pivot['총매출차이'] = pivot[a_krw] - pivot[p_krw]
             
-            return pivot[[COLUMNS['cust_group'], COLUMNS['category_mid'], '총매출차이', 
-                          '수량차이_Impact', '단가차이_Impact', '환율차이_Impact']]
+            return pivot
         except KeyError:
             return pd.DataFrame()
