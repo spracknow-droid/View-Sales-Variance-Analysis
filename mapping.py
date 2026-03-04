@@ -1,12 +1,12 @@
-# 실제 DB View의 컬럼명과 100% 매칭
 COLUMNS = {
     'view_name': 'View_Integrated_Sales',
-    'date': '매출연월',        # YYYY-MM
-    'cust_group': '고객그룹',  # 필터링 축 1
-    'category_mid': '중분류',  # 필터링 축 2
-    'division': '데이터구분',  # '판매실적' vs '계획' 구분자
+    'date': '매출연월',
+    'cust_group': '고객그룹',
+    'category_mid': '중분류',
+    'division': '데이터구분',
     'qty': '수량',
-    'amt_cur': '판매금액',    # 외화 기준 (수량 × 판매단가)
-    'amt_krw': '장부금액',    # 원화 기준 (최종 회계 반영액)
-    'currency': '거래통화'
+    'unit_price': '판매단가',  # [추가] DB에 있는 실제 단가 컬럼명
+    'amt_krw': '장부금액',
+    'currency': '거래통화',
+    # '판매금액'은 DB에 없으므로 매핑에서 제외하거나 내부 계산용으로만 인지
 }
